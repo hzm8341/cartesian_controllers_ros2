@@ -1,0 +1,585 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>cartesian_controllers_ros2 算法原理与架构图</title>
+  <style>
+    :root {
+      --bg: #f7f8fa;
+      --panel: #ffffff;
+      --ink: #172033;
+      --muted: #5b6475;
+      --line: #d8dde8;
+      --blue: #2563eb;
+      --green: #0f8f68;
+      --orange: #c56a15;
+      --red: #c63d3d;
+      --violet: #6d4ed8;
+      --code: #eef2f7;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font: 15px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans SC", Arial, sans-serif;
+    }
+    header {
+      padding: 40px 56px 28px;
+      background: #111827;
+      color: #fff;
+    }
+    header h1 {
+      margin: 0 0 10px;
+      font-size: 30px;
+      letter-spacing: 0;
+    }
+    header p {
+      max-width: 980px;
+      margin: 0;
+      color: #d2d8e5;
+    }
+    main {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 28px 28px 56px;
+    }
+    section {
+      margin: 22px 0;
+      padding: 24px;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+    }
+    h2 {
+      margin: 0 0 14px;
+      font-size: 22px;
+    }
+    h3 {
+      margin: 22px 0 8px;
+      font-size: 17px;
+    }
+    p { margin: 8px 0; }
+    ul { margin: 8px 0 0 20px; padding: 0; }
+    li { margin: 5px 0; }
+    code, .formula {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+      background: var(--code);
+      border-radius: 5px;
+      padding: 2px 5px;
+    }
+    .formula {
+      display: block;
+      overflow-x: auto;
+      margin: 10px 0;
+      padding: 12px 14px;
+      white-space: pre;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 14px;
+    }
+    .card {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 14px;
+      background: #fbfcfe;
+    }
+    .card strong { display: block; margin-bottom: 4px; }
+    .muted { color: var(--muted); }
+    .tag {
+      display: inline-block;
+      min-width: 42px;
+      margin-right: 6px;
+      padding: 1px 7px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 700;
+      text-align: center;
+    }
+    .tag-required { background: #e6f0ff; color: #1d4ed8; }
+    .tag-mode { background: #fff4e8; color: #a3520e; }
+    .tag-optional { background: #edf7f2; color: #08704f; }
+    .diagram {
+      width: 100%;
+      overflow-x: auto;
+      margin: 16px 0 6px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+    }
+    svg { display: block; min-width: 900px; width: 100%; height: auto; }
+    .box { fill: #fff; stroke: #a9b4c6; stroke-width: 1.4; rx: 8; }
+    .box-blue { fill: #edf4ff; stroke: #7aa6f7; }
+    .box-green { fill: #eaf8f2; stroke: #6abf9e; }
+    .box-orange { fill: #fff4e8; stroke: #eba85f; }
+    .box-red { fill: #fff0f0; stroke: #e58a8a; }
+    .box-violet { fill: #f3efff; stroke: #a99af0; }
+    .svg-title { font: 700 15px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #172033; }
+    .svg-text { font: 12px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #334155; }
+    .svg-small { font: 11px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #5b6475; }
+    .arrow { stroke: #64748b; stroke-width: 1.7; fill: none; marker-end: url(#arrow); }
+    .arrow-blue { stroke: var(--blue); }
+    .arrow-green { stroke: var(--green); }
+    .arrow-orange { stroke: var(--orange); }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 10px;
+      font-size: 14px;
+    }
+    th, td {
+      border: 1px solid var(--line);
+      padding: 9px 10px;
+      text-align: left;
+      vertical-align: top;
+    }
+    th { background: #f1f5f9; }
+    @media (max-width: 720px) {
+      header { padding: 30px 22px; }
+      main { padding: 18px 14px 38px; }
+      section { padding: 18px; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>cartesian_controllers_ros2 算法原理与架构图</h1>
+    <p>本项目是面向 ROS 2 control 的笛卡尔空间可变阻抗控制器集合，核心包为 <code>cartesian_vic_controller</code>，并提供状态广播、MoveIt Servo 版本和双边遥操作扩展。</p>
+  </header>
+
+  <main>
+    <section>
+      <h2>1. 项目总体定位</h2>
+      <p>仓库围绕 6 维笛卡尔位姿、速度、加速度、力/力矩和柔顺参数构建控制链路。主控制器从 ros2_control 硬件接口读取关节状态和可选力传感器数据，通过动力学/运动学插件计算末端状态、雅可比和惯量，再由 VIC 规则插件生成关节位置/速度或力矩命令。</p>
+      <div class="grid">
+        <div class="card"><strong>cartesian_control_msgs</strong><span class="muted">定义 CartesianState、CompliantFrameTrajectory、VicControllerState、TeleopControllerState 等消息。</span></div>
+        <div class="card"><strong>cartesian_state_broadcaster</strong><span class="muted">读取关节 position/velocity，利用 kinematics_interface 发布末端 pose 和 twist。</span></div>
+        <div class="card"><strong>cartesian_vic_controller</strong><span class="muted">主控制器，基于 ros2_control 和 pluginlib，提供导纳、阻抗、twist 导纳三类规则。</span></div>
+        <div class="card"><strong>cartesian_vic_servo</strong><span class="muted">将 VIC 规则输出的 twist 命令交给 MoveIt Servo，再生成 JointTrajectory。</span></div>
+        <div class="card"><strong>cartesian_vic_teleop_controller</strong><span class="muted">继承 VIC 主控制器，增加 leader/follower 映射、clutch、双边柔顺参考生成。</span></div>
+      </div>
+    </section>
+
+    <section>
+      <h2>2. 包级架构图</h2>
+      <div class="diagram">
+        <svg viewBox="0 0 1100 540" role="img" aria-label="包级架构图">
+          <defs>
+            <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M 0 0 L 10 5 L 0 10 z" fill="#64748b"></path>
+            </marker>
+          </defs>
+          <rect x="40" y="42" width="230" height="120" class="box box-violet"></rect>
+          <text x="60" y="72" class="svg-title">cartesian_control_msgs</text>
+          <text x="60" y="98" class="svg-text">CartesianState</text>
+          <text x="60" y="120" class="svg-text">CompliantFrameTrajectory</text>
+          <text x="60" y="142" class="svg-text">Vic / Teleop state</text>
+
+          <rect x="420" y="40" width="280" height="124" class="box box-blue"></rect>
+          <text x="442" y="70" class="svg-title">cartesian_vic_controller</text>
+          <text x="442" y="96" class="svg-text">CartesianVicController</text>
+          <text x="442" y="118" class="svg-text">CartesianVicRule + pluginlib</text>
+          <text x="442" y="140" class="svg-small">admittance / impedance / twist command</text>
+
+          <rect x="820" y="48" width="220" height="110" class="box box-green"></rect>
+          <text x="842" y="78" class="svg-title">ros2_control 硬件</text>
+          <text x="842" y="104" class="svg-text">state interfaces</text>
+          <text x="842" y="126" class="svg-text">command interfaces</text>
+
+          <rect x="420" y="230" width="280" height="124" class="box"></rect>
+          <text x="442" y="260" class="svg-title">dynamics_interface</text>
+          <text x="442" y="286" class="svg-text">URDF + base/tip frames</text>
+          <text x="442" y="308" class="svg-text">FK, J, Jdot, H, C, G</text>
+          <text x="442" y="330" class="svg-small">同时供 IK / 动力学补偿使用</text>
+
+          <rect x="64" y="230" width="255" height="124" class="box box-orange"></rect>
+          <text x="86" y="260" class="svg-title">cartesian_state_broadcaster</text>
+          <text x="86" y="286" class="svg-text">读取 q, qdot</text>
+          <text x="86" y="308" class="svg-text">kinematics_interface</text>
+          <text x="86" y="330" class="svg-small">发布 ~/cartesian_state</text>
+
+          <rect x="780" y="230" width="280" height="124" class="box box-orange"></rect>
+          <text x="802" y="260" class="svg-title">cartesian_vic_servo</text>
+          <text x="802" y="286" class="svg-text">VIC twist rule</text>
+          <text x="802" y="308" class="svg-text">MoveIt Servo</text>
+          <text x="802" y="330" class="svg-small">输出 JointTrajectory</text>
+
+          <rect x="365" y="420" width="370" height="86" class="box box-red"></rect>
+          <text x="388" y="452" class="svg-title">cartesian_vic_teleop_controller</text>
+          <text x="388" y="478" class="svg-text">继承 CartesianVicController，增加 PassiveVicTeleopLogic</text>
+          <text x="388" y="500" class="svg-small">leader/follower 映射 + teleop rule + 双边 VIC reference</text>
+
+          <path d="M270 102 L420 102" class="arrow"></path>
+          <text x="296" y="92" class="svg-small">消息接口</text>
+          <path d="M700 102 L820 102" class="arrow arrow-blue"></path>
+          <text x="723" y="92" class="svg-small">命令</text>
+          <path d="M820 130 L700 130" class="arrow arrow-green"></path>
+          <text x="722" y="148" class="svg-small">状态/传感器</text>
+          <path d="M560 164 L560 230" class="arrow"></path>
+          <text x="578" y="205" class="svg-small">模型计算</text>
+          <path d="M319 292 L420 292" class="arrow"></path>
+          <text x="336" y="282" class="svg-small">末端状态</text>
+          <path d="M700 292 L780 292" class="arrow"></path>
+          <text x="710" y="282" class="svg-small">复用 VIC 规则</text>
+          <path d="M550 354 L550 420" class="arrow"></path>
+          <text x="570" y="390" class="svg-small">扩展控制逻辑</text>
+          <path d="M505 420 C460 360 455 270 505 164" class="arrow arrow-orange"></path>
+          <text x="386" y="384" class="svg-small">leader 本体仍走 VIC</text>
+        </svg>
+      </div>
+    </section>
+
+    <section>
+      <h2>3. VIC 控制算法原理</h2>
+      <p>VIC 表示 Variable Impedance Control。控制目标是在末端笛卡尔空间呈现期望的质量-阻尼-刚度行为，同时允许参考力/力矩参与交互控制。</p>
+      <p>状态、误差和力定义如下。项目代码使用几何雅可比 <code>J(q)</code>，末端速度为 6 维 twist，姿态误差使用旋转矩阵误差的 angle-axis 表示。</p>
+      <div class="formula">q, qdot                 : 关节位置与速度
+x = [p; theta]          : 末端 6D 笛卡尔状态，theta 用 angle-axis 误差表达
+xd = [pd; thetad]       : 期望笛卡尔状态
+e  = xd - x
+edot = xdot_d - xdot
+w_ext = [force; torque] : 末端外部 wrench，代码中由 F/T 传感器转换到 base frame</div>
+      <p>机械臂关节空间动力学模型：</p>
+      <div class="formula">H(q) qddot + C(q, qdot) + G(q) = tau_cmd + J(q)^T w_ext</div>
+      <p>期望笛卡尔柔顺行为：</p>
+      <div class="formula">M e_ddot + D e_dot + K e = w_ext - w_ref</div>
+      <p>将误差定义代入后，控制器计算的笛卡尔加速度命令为：</p>
+      <div class="formula">xddot_cmd = xddot_d + M^-1 (K e + D e_dot - w_ext + w_ref)</div>
+      <p><code>M</code>、<code>D</code>、<code>K</code> 是 6x6 笛卡尔惯量、阻尼和刚度矩阵。默认参数只配置 6 个对角值，代码会组成对角矩阵并把它们从 <code>vic.frame.id</code> 旋转到机器人 base frame。阻尼可由阻尼比生成：</p>
+      <div class="formula">D_i = 2 zeta_i sqrt(M_i K_i),  i = x, y, z, rx, ry, rz</div>
+      <p>若 <code>vic.use_natural_robot_inertia = true</code>，则期望惯量不取参数矩阵，而使用动力学插件计算的机器人自然笛卡尔惯量：</p>
+      <div class="formula">Mx(q) = (J(q) H(q)^-1 J(q)^T)^-1
+M = Mx(q)</div>
+
+      <h3>导纳控制 VanillaCartesianAdmittanceRule</h3>
+      <p>导纳模式把外力引起的笛卡尔加速度积分为关节速度和关节位置命令，适合 position/velocity 命令接口。</p>
+      <div class="formula">qddot_cmd = J# (xddot_cmd - Jdot(q, qdot) qdot)
+qdot_cmd(k) = qdot_cmd(k-1) + qddot_cmd Ts
+q_cmd(k)    = q_cmd(k-1)    + qdot_cmd(k) Ts</div>
+      <p>实现中还会检查雅可比条件数，使用阻尼伪逆：</p>
+      <div class="formula">J# = (J^T J + alpha I)^-1 J^T</div>
+      <p>若启用 nullspace 控制，导纳规则会增加一个投影到零空间的关节加速度项：</p>
+      <div class="formula">N = I - J# J
+qddot_null = N M_null^-1 (-D_null qdot + K_null (q_null_d - q) + tau_ext)
+qddot_cmd  = qddot_cmd + qddot_null</div>
+      <p>最后可对 <code>qdot_cmd</code> 做指数平滑，以降低命令抖动。</p>
+
+      <h3>阻抗控制 VanillaCartesianImpedanceRule</h3>
+      <p>阻抗模式先把笛卡尔加速度映射到关节加速度，再用动力学模型生成力矩命令，适合 effort 命令接口。</p>
+      <div class="formula">qddot_cmd = J# (xddot_cmd - Jdot(q, qdot) qdot)</div>
+      <p>非自然惯量分支的力矩命令为：</p>
+      <div class="formula">tau_raw = H(q) qddot_cmd + J(q)^T w_ext</div>
+      <p>若启用重力/科氏补偿：</p>
+      <div class="formula">tau_cmd = tau_raw + C(q, qdot) + G(q)</div>
+      <p>若未启用补偿：</p>
+      <div class="formula">tau_cmd = tau_raw</div>
+      <p>自然惯量分支会用 <code>Mx(q)</code> 作为期望惯量，并按代码中的简化阻抗形式计算关节加速度，再乘以关节惯量对角项形成原始力矩：</p>
+      <div class="formula">qddot_cmd = J# (xddot_d - Jdot qdot) + J^T (K e + D e_dot + w_ref)
+tau_raw   = diag(H(q)) qddot_cmd</div>
+
+      <h3>Twist 导纳 TwistCmdCartesianAdmittanceRule</h3>
+      <p>该规则只输出笛卡尔 twist，不在 VIC 内部做逆运动学。它服务于 <code>cartesian_vic_servo</code>，由 MoveIt Servo 将 twist 转换成关节轨迹。</p>
+      <div class="formula">twist_cmd(k) = twist_cmd(k-1) + xddot_cmd Ts</div>
+    </section>
+
+    <section>
+      <h2>4. 主控制器实时链路</h2>
+      <div class="diagram">
+        <svg viewBox="0 0 1100 430" role="img" aria-label="VIC 控制循环">
+          <defs>
+            <marker id="arrow2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M 0 0 L 10 5 L 0 10 z" fill="#64748b"></path>
+            </marker>
+          </defs>
+          <rect x="44" y="70" width="180" height="88" class="box box-green"></rect>
+          <text x="64" y="102" class="svg-title">硬件状态</text>
+          <text x="64" y="126" class="svg-text">q, qdot</text>
+          <text x="64" y="148" class="svg-small">F/T, external torque 可选</text>
+
+          <rect x="285" y="70" width="190" height="88" class="box box-blue"></rect>
+          <text x="306" y="102" class="svg-title">MeasurementData</text>
+          <text x="306" y="126" class="svg-text">读取并校验接口</text>
+          <text x="306" y="148" class="svg-small">read_state_from_hardware</text>
+
+          <rect x="535" y="56" width="220" height="116" class="box"></rect>
+          <text x="558" y="88" class="svg-title">CartesianVicRule</text>
+          <text x="558" y="114" class="svg-text">update_input_data</text>
+          <text x="558" y="136" class="svg-small">FK/J/Jdot/H/Mx + wrench filter</text>
+          <text x="558" y="158" class="svg-small">参数更新 + reference update</text>
+
+          <rect x="820" y="70" width="220" height="88" class="box box-orange"></rect>
+          <text x="842" y="102" class="svg-title">compute_controls</text>
+          <text x="842" y="126" class="svg-text">导纳/阻抗插件</text>
+          <text x="842" y="148" class="svg-small">VicCommandData</text>
+
+          <rect x="820" y="250" width="220" height="88" class="box box-green"></rect>
+          <text x="842" y="282" class="svg-title">硬件命令接口</text>
+          <text x="842" y="306" class="svg-text">position / velocity / effort</text>
+          <text x="842" y="328" class="svg-small">write_state_to_hardware</text>
+
+          <rect x="535" y="250" width="220" height="88" class="box box-violet"></rect>
+          <text x="558" y="282" class="svg-title">~/status</text>
+          <text x="558" y="306" class="svg-text">VicControllerState</text>
+          <text x="558" y="328" class="svg-small">实时发布当前状态与命令</text>
+
+          <rect x="285" y="250" width="190" height="88" class="box box-red"></rect>
+          <text x="306" y="282" class="svg-title">输入参考</text>
+          <text x="306" y="306" class="svg-text">~/compliant_frame_reference</text>
+          <text x="306" y="328" class="svg-small">pose/twist/accel/wrench/MKD</text>
+
+          <path d="M224 114 L285 114" class="arrow"></path>
+          <path d="M475 114 L535 114" class="arrow"></path>
+          <path d="M755 114 L820 114" class="arrow"></path>
+          <path d="M930 158 L930 250" class="arrow"></path>
+          <path d="M820 294 L755 294" class="arrow"></path>
+          <path d="M645 250 L645 172" class="arrow"></path>
+          <path d="M475 294 C510 245 525 195 535 144" class="arrow arrow-orange"></path>
+          <text x="360" y="236" class="svg-small">实时缓冲区读入最新 reference</text>
+        </svg>
+      </div>
+      <p>主循环入口是 <code>CartesianVicController::update()</code>。生命周期上，<code>on_configure()</code> 加载 URDF、参数、VIC 规则插件和传感器语义组件；第一次收到有效状态后，以当前末端位姿初始化参考；之后每个周期读取硬件状态、更新参考、调用规则插件、写入硬件命令并发布状态。</p>
+    </section>
+
+    <section>
+      <h2>5. Teleop 与 Servo 扩展链路</h2>
+      <div class="diagram">
+        <svg viewBox="0 0 1100 470" role="img" aria-label="Teleop 与 Servo 架构">
+          <defs>
+            <marker id="arrow3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M 0 0 L 10 5 L 0 10 z" fill="#64748b"></path>
+            </marker>
+          </defs>
+          <rect x="54" y="64" width="210" height="96" class="box box-blue"></rect>
+          <text x="76" y="96" class="svg-title">Leader VIC</text>
+          <text x="76" y="120" class="svg-text">本机 CartesianVicRule</text>
+          <text x="76" y="142" class="svg-small">leader pose/velocity/wrench</text>
+
+          <rect x="420" y="48" width="260" height="128" class="box box-red"></rect>
+          <text x="442" y="82" class="svg-title">PassiveVicTeleopLogic</text>
+          <text x="442" y="108" class="svg-text">MappingManager</text>
+          <text x="442" y="130" class="svg-text">TeleopRule plugin</text>
+          <text x="442" y="152" class="svg-small">clutch + compliance + 双边参考</text>
+
+          <rect x="820" y="64" width="220" height="96" class="box box-green"></rect>
+          <text x="842" y="96" class="svg-title">Follower VIC</text>
+          <text x="842" y="120" class="svg-text">/status 输入</text>
+          <text x="842" y="142" class="svg-small">/reference_compliant_frame_trajectory 输出</text>
+
+          <rect x="54" y="300" width="250" height="96" class="box box-orange"></rect>
+          <text x="76" y="332" class="svg-title">cartesian_vic_servo</text>
+          <text x="76" y="356" class="svg-text">TwistCmdCartesianAdmittanceRule</text>
+          <text x="76" y="378" class="svg-small">输出 twist_command</text>
+
+          <rect x="420" y="300" width="250" height="96" class="box"></rect>
+          <text x="442" y="332" class="svg-title">MoveIt Servo</text>
+          <text x="442" y="356" class="svg-text">碰撞/限速/轨迹生成</text>
+          <text x="442" y="378" class="svg-small">command_out_type = JointTrajectory</text>
+
+          <rect x="820" y="300" width="220" height="96" class="box box-green"></rect>
+          <text x="842" y="332" class="svg-title">下游控制器</text>
+          <text x="842" y="356" class="svg-text">JointTrajectory</text>
+          <text x="842" y="378" class="svg-small">执行关节运动</text>
+
+          <path d="M264 112 L420 112" class="arrow"></path>
+          <path d="M680 112 L820 112" class="arrow"></path>
+          <path d="M820 140 L680 140" class="arrow arrow-green"></path>
+          <text x="704" y="102" class="svg-small">follower reference</text>
+          <text x="704" y="160" class="svg-small">follower state</text>
+          <path d="M550 176 C500 230 270 240 178 300" class="arrow arrow-orange"></path>
+          <text x="300" y="246" class="svg-small">Servo 分支复用同一 VIC 规则接口</text>
+          <path d="M304 348 L420 348" class="arrow"></path>
+          <path d="M670 348 L820 348" class="arrow"></path>
+        </svg>
+      </div>
+      <p><code>cartesian_vic_teleop_controller</code> 不直接替换底层 VIC，而是在主 VIC 控制循环前加入遥操作逻辑：读取 follower 的 <code>VicControllerState</code>、读取 teleop compliance 和 clutch 状态，计算 leader/follower 两套 <code>CompliantFrameTrajectory</code>。leader reference 回灌到本机 VIC，follower reference 通过 topic 发给从端控制器。</p>
+      <p><code>cartesian_vic_servo</code> 则是另一条执行路径：VIC 规则只计算 twist，MoveIt Servo 负责把 twist 变成关节轨迹。它要求实时获取 joint state、wrench 和 reference trajectory，若状态或参考超时则发布零 twist 作为回退策略。</p>
+    </section>
+
+    <section>
+      <h2>6. 需要接入的硬件数据</h2>
+      <p>按当前代码，硬件接入主要通过 ros2_control state/command interfaces 和 semantic components 完成。下面按“必须/按模式/可选”列出。</p>
+      <table>
+        <thead>
+          <tr><th>硬件数据或接口</th><th>是否需要</th><th>接入形式</th><th>用途</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>每个受控关节的位置 <code>q</code></td>
+            <td><span class="tag tag-required">必须</span></td>
+            <td><code>&lt;joint&gt;/position</code> state interface</td>
+            <td>初始化参考位姿、FK、Jacobian、动力学模型、控制误差计算。</td>
+          </tr>
+          <tr>
+            <td>每个受控关节的速度 <code>qdot</code></td>
+            <td><span class="tag tag-required">必须</span></td>
+            <td><code>&lt;joint&gt;/velocity</code> state interface</td>
+            <td>末端 twist、<code>Jdot qdot</code>、加速度估计、阻尼项和动力学补偿。</td>
+          </tr>
+          <tr>
+            <td>关节位置命令接口</td>
+            <td><span class="tag tag-mode">导纳常用</span></td>
+            <td><code>&lt;joint&gt;/position</code> command interface</td>
+            <td>导纳控制可输出积分后的 <code>q_cmd</code>。若只用速度控制，可不声明该命令接口。</td>
+          </tr>
+          <tr>
+            <td>关节速度命令接口</td>
+            <td><span class="tag tag-mode">导纳推荐</span></td>
+            <td><code>&lt;joint&gt;/velocity</code> command interface</td>
+            <td>导纳控制主要输出 <code>qdot_cmd</code>，README 中也建议导纳优先接 velocity group。</td>
+          </tr>
+          <tr>
+            <td>关节力矩/力命令接口</td>
+            <td><span class="tag tag-mode">阻抗必须</span></td>
+            <td><code>&lt;joint&gt;/effort</code> command interface</td>
+            <td>阻抗控制输出 <code>tau_cmd</code>，没有 effort command interface 不能运行阻抗模式。</td>
+          </tr>
+          <tr>
+            <td>六维力/力矩传感器 wrench</td>
+            <td><span class="tag tag-mode">按模式</span></td>
+            <td><code>ForceTorqueSensor</code> semantic component，配置 <code>ft_sensor.name</code> 和 <code>ft_sensor.frame.id</code></td>
+            <td>导纳控制需要外部 wrench；阻抗非自然惯量分支也需要外力估计。可配置滤波和末端重力补偿。</td>
+          </tr>
+          <tr>
+            <td>外部关节力矩</td>
+            <td><span class="tag tag-optional">可选</span></td>
+            <td><code>external_torque_sensor</code> semantic component</td>
+            <td>用于 nullspace 控制中的外部力矩项；不开启 nullspace 时通常不需要。</td>
+          </tr>
+          <tr>
+            <td>URDF / robot_description</td>
+            <td><span class="tag tag-required">必须</span></td>
+            <td>ROS 参数 <code>robot_description</code>，或从 <code>robot_state_publisher</code> 获取</td>
+            <td>动力学插件需要模型结构、关节、base/tip、传感器 frame。</td>
+          </tr>
+          <tr>
+            <td>动力学/运动学插件配置</td>
+            <td><span class="tag tag-required">必须</span></td>
+            <td><code>dynamics.plugin_name</code>、<code>dynamics.plugin_package</code>、<code>dynamics.base</code>、<code>dynamics.tip</code></td>
+            <td>计算 FK、<code>J</code>、<code>Jdot</code>、<code>H</code>、<code>C</code>、<code>G</code> 和自然笛卡尔惯量。</td>
+          </tr>
+          <tr>
+            <td>Servo 分支的 joint state 与 wrench topic</td>
+            <td><span class="tag tag-mode">Servo 需要</span></td>
+            <td>MoveIt planning scene monitor 当前状态；<code>~/wrench</code> topic</td>
+            <td><code>cartesian_vic_servo</code> 不直接 claim ros2_control 接口，而从 MoveIt/Topic 获取状态并向 MoveIt Servo 发送 twist。</td>
+          </tr>
+          <tr>
+            <td>Teleop follower 状态与 clutch</td>
+            <td><span class="tag tag-mode">Teleop 需要</span></td>
+            <td><code>/vic_controller_follower/status</code>、<code>fd_clutch</code>、<code>~/teleoperation_compliance_reference</code></td>
+            <td>双边遥操作计算 leader/follower 两端参考，clutch 控制工作空间映射是否接合。</td>
+          </tr>
+        </tbody>
+      </table>
+      <h3>最小接入组合</h3>
+      <ul>
+        <li>仅运行状态广播器：关节 <code>position</code> 和 <code>velocity</code> state interfaces，外加 URDF 和 kinematics plugin。</li>
+        <li>运行导纳 VIC：关节 <code>position</code>/<code>velocity</code> state interfaces，<code>velocity</code> 或 <code>position+velocity</code> command interfaces，通常还需要 F/T wrench。</li>
+        <li>运行阻抗 VIC：关节 <code>position</code>/<code>velocity</code> state interfaces，<code>effort</code> command interface，若不用自然惯量分支则需要 F/T wrench。</li>
+        <li>运行 MoveIt Servo 分支：MoveIt 可用的实时 joint state、F/T wrench topic、MoveIt Servo 输出的 JointTrajectory 下游控制器。</li>
+        <li>运行双边 Teleop：leader 本机硬件数据 + follower VIC <code>/status</code> + follower reference topic + clutch/compliance 输入。</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>7. 关键接口与数据对象</h2>
+      <table>
+        <thead>
+          <tr><th>对象/接口</th><th>作用</th><th>典型位置</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>CompliantFrameTrajectory</code></td><td>输入参考轨迹，包含 pose、velocity、acceleration、wrench 以及每个点的 inertia/damping/stiffness。</td><td><code>cartesian_control_msgs/msg</code></td></tr>
+          <tr><td><code>VicControllerState</code></td><td>输出控制器状态，包含期望状态、实际状态、渲染柔顺参数、关节命令和自然惯量。</td><td><code>~/status</code></td></tr>
+          <tr><td><code>CartesianVicController</code></td><td>ros2_control 控制器壳层，负责生命周期、接口声明、实时循环、硬件读写和状态发布。</td><td><code>cartesian_vic_controller</code></td></tr>
+          <tr><td><code>CartesianVicRule</code></td><td>VIC 算法基类，负责参数、动力学插件、运动学状态、传感器滤波和控制插件统一入口。</td><td><code>cartesian_vic_controller</code></td></tr>
+          <tr><td><code>dynamics_interface</code></td><td>提供 FK、Jacobian、Jacobian derivative、关节惯量、笛卡尔自然惯量、Coriolis、Gravity。</td><td>外部 pluginlib 插件</td></tr>
+          <tr><td><code>ForceTorqueSensor</code></td><td>ros2_control semantic component，用于读取力/力矩传感器状态接口。</td><td>可选硬件接口</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>8. 未来可应用场景</h2>
+      <p>当前项目的核心价值是把末端笛卡尔空间的轨迹跟踪、柔顺交互、力反馈和 ROS 2 control 硬件接口打通。因此它未来适合用于“需要接触环境、需要安全柔顺、需要远程/双边操作”的机器人系统。</p>
+      <table>
+        <thead>
+          <tr><th>应用场景</th><th>适合的控制形态</th><th>需要重点接入的数据</th><th>落地价值</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>力控装配与插拔</td>
+            <td>导纳 VIC 或阻抗 VIC</td>
+            <td>高频关节状态、末端 F/T wrench、准确 TCP/工具坐标、刚度/阻尼参数在线调整</td>
+            <td>适合 peg-in-hole、接插件插拔、卡扣装配、端子压接等存在接触约束的任务，机器人可以在受力后自动让位或保持期望接触力。</td>
+          </tr>
+          <tr>
+            <td>表面跟随与恒力加工</td>
+            <td>导纳 VIC</td>
+            <td>F/T 传感器、末端轨迹参考、工具重力补偿参数、速度/位置命令接口</td>
+            <td>适合打磨、抛光、去毛刺、擦拭、喷涂前贴近曲面等任务，通过低刚度方向顺应表面，高刚度方向保持轨迹。</td>
+          </tr>
+          <tr>
+            <td>人机协作与安全拖动</td>
+            <td>导纳 VIC + 低刚度参数</td>
+            <td>关节状态、F/T 或外部力估计、速度命令接口、安全限速/限力层</td>
+            <td>可用于示教拖动、协作搬运、共享工作空间中的顺应避让，让机械臂对外力更柔和。</td>
+          </tr>
+          <tr>
+            <td>双边遥操作</td>
+            <td>cartesian_vic_teleop_controller</td>
+            <td>leader/follower 两端 VicControllerState、两端 F/T wrench、clutch、teleop compliance</td>
+            <td>适合危险环境、远程实验、核工业/化工/救援等场景。leader 端可渲染 follower 的接触状态，follower 端跟随 leader 操作意图。</td>
+          </tr>
+          <tr>
+            <td>移动操作机器人</td>
+            <td>VIC + MoveIt Servo 分支</td>
+            <td>MoveIt planning scene、joint state、wrench topic、JointTrajectory 下游控制器</td>
+            <td>适合移动底盘加机械臂系统，在动态环境中通过 MoveIt Servo 处理速度命令、限速和碰撞相关约束。</td>
+          </tr>
+          <tr>
+            <td>康复、辅助与外骨骼类交互</td>
+            <td>导纳 VIC 或遥操作逻辑扩展</td>
+            <td>人体交互力、关节状态、安全冗余传感器、严格限力限速</td>
+            <td>适合需要柔顺人机交互的研究原型，例如被动引导、力辅助训练、低阻抗跟随。真机应用需要额外医疗级安全认证与冗余保护。</td>
+          </tr>
+          <tr>
+            <td>教学科研平台</td>
+            <td>所有 VIC rule 插件</td>
+            <td>仿真或真实机械臂模型、可切换的 dynamics plugin、日志/状态 topic</td>
+            <td>适合比较导纳、阻抗、自然惯量、nullspace、滤波和不同柔顺参数对系统响应的影响。</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>适配路线</h3>
+      <ul>
+        <li>短期最容易落地的是仿真验证、状态广播、导纳式柔顺跟踪和 MoveIt Servo twist 分支，因为对底层硬件力矩控制要求较低。</li>
+        <li>中期可扩展到打磨、擦拭、装配等接触任务，关键是稳定 F/T 数据、工具重力补偿、合理的限速限力和任务级状态机。</li>
+        <li>长期可发展为双边遥操作和移动操作系统，重点会转向网络延迟、passivity、clutch 映射、碰撞约束、故障回退和多传感器融合。</li>
+      </ul>
+
+      <h3>当前项目还需要补强的能力</h3>
+      <ul>
+        <li>奇异规避仍不完整，现有代码主要是条件数告警/报错，真机复杂任务需要更平滑的缩放或约束优化策略。</li>
+        <li>力控任务需要完善工具负载辨识、F/T 零偏校准、接触状态检测和异常力回退策略。</li>
+        <li>工业应用需要加入任务层安全壳，例如最大速度、最大力、工作空间边界、碰撞监测和急停联动。</li>
+        <li>遥操作应用需要进一步处理通信延迟、丢包、能量一致性和 leader/follower 缩放映射。</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>9. 运行时注意点</h2>
+      <ul>
+        <li>主 VIC 控制器要求关节 <code>position</code> 和 <code>velocity</code> 状态接口同时存在。</li>
+        <li>导纳控制通常需要 F/T 传感器；阻抗控制在非自然惯量模式下也依赖外力估计。</li>
+        <li>导纳模式输出 <code>position</code>/<code>velocity</code> 命令；阻抗模式输出 <code>effort</code> 命令；servo 分支输出 twist 并交给 MoveIt Servo。</li>
+        <li>代码中已有雅可比条件数告警/停止逻辑，但 README 也明确指出默认 VIC 的奇异规避策略仍不完整，真机使用需要额外安全层。</li>
+        <li>控制器使用 realtime buffer 和 realtime publisher，控制循环内避免非实时阻塞操作。</li>
+      </ul>
+    </section>
+  </main>
+</body>
+</html>
