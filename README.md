@@ -290,6 +290,252 @@ twist_cmd(k) = twist_cmd(k-1) + xddot_cmd Ts
 | Servo 分支 joint state 与 wrench topic | Servo 需要 | MoveIt planning scene monitor 当前状态；`~/wrench` topic | `cartesian_vic_servo` 获取状态并向 MoveIt Servo 发送 twist。 |
 | Teleop follower 状态与 clutch | Teleop 需要 | `/vic_controller_follower/status`、`fd_clutch`、`~/teleoperation_compliance_reference` | 双边遥操作计算 leader/follower 两端参考。 |
 
+## 硬件接口和 Topic 消息格式
+
+### 1. 主 VIC 控制器的关节数据不是 Topic
+
+`cartesian_vic_controller` 作为 ros2_control 控制器运行时，关节数据通过 hardware interface 读取和写入，不订阅 `sensor_msgs/JointState`。硬件插件需要导出如下接口名称：
+
+```text
+<joint_name>/position
+<joint_name>/velocity
+<joint_name>/effort        # 仅阻抗 effort 控制必需
+```
+
+控制器参数中的 `joints` 顺序必须和动力学模型、硬件接口语义一致。例如 7 轴机械臂：
+
+```yaml
+cartesian_vic_controller:
+  ros__parameters:
+    joints:
+      - joint_a1
+      - joint_a2
+      - joint_a3
+      - joint_a4
+      - joint_a5
+      - joint_a6
+      - joint_a7
+    state_interfaces:
+      - position
+      - velocity
+    command_interfaces:
+      - velocity        # 导纳推荐
+      # - position      # 导纳可选
+      # - effort        # 阻抗必需
+```
+
+硬件侧每个周期至少要提供：
+
+| 数据 | 数量 | 单位 | 说明 |
+| --- | --- | --- | --- |
+| `position` | `num_joints` | rad 或 m | 转动关节通常是 rad，直线关节通常是 m。 |
+| `velocity` | `num_joints` | rad/s 或 m/s | 必须稳定可用，VIC 用它计算末端 twist 和阻尼项。 |
+| `effort` state | 可选 | N·m 或 N | 当前代码主流程不强制读取关节 effort；外部关节力矩使用单独 external torque sensor。 |
+
+导纳控制写回硬件的命令：
+
+```text
+<joint_name>/velocity  = qdot_cmd[i]
+<joint_name>/position  = q_cmd[i]       # 如果声明了 position command interface
+```
+
+阻抗控制写回硬件的命令：
+
+```text
+<joint_name>/effort = tau_cmd[i]
+```
+
+### 2. 六维力/力矩传感器接口格式
+
+主 VIC 控制器使用 ros2_control 的 `ForceTorqueSensor` semantic component，而不是普通 wrench topic。硬件插件需要导出以 `ft_sensor.name` 为前缀的 6 个 state interfaces：
+
+```text
+<ft_sensor.name>/force.x
+<ft_sensor.name>/force.y
+<ft_sensor.name>/force.z
+<ft_sensor.name>/torque.x
+<ft_sensor.name>/torque.y
+<ft_sensor.name>/torque.z
+```
+
+对应参数示例：
+
+```yaml
+cartesian_vic_controller:
+  ros__parameters:
+    ft_sensor:
+      is_enabled: true
+      name: ftsensor
+      frame:
+        id: ft_sensor
+```
+
+接口值含义：
+
+| 字段 | 单位 | 说明 |
+| --- | --- | --- |
+| `force.x/y/z` | N | 传感器坐标系下的三轴力。 |
+| `torque.x/y/z` | N·m | 传感器坐标系下的三轴力矩。 |
+| `ft_sensor.frame.id` | frame id | wrench 所在坐标系，必须能通过 URDF/TF 与 base、end-effector 建立关系。 |
+
+注意：导纳控制通常需要 F/T 数据；阻抗控制在非自然惯量分支下也需要外力估计。如果工具有明显自重，应配置 `gravity_compensation.frame.id` 和 `gravity_compensation.CoG`，否则 wrench 中会混入工具重力。
+
+### 3. 外部关节力矩接口格式
+
+如果启用 nullspace 外部力矩项，可配置 `external_torque_sensor`。按当前实现，默认接口名形如：
+
+```text
+<external_torque_sensor.name>/external_torque.joint_a0
+<external_torque_sensor.name>/external_torque.joint_a1
+...
+<external_torque_sensor.name>/external_torque.joint_a<N-1>
+```
+
+每个值是对应关节的外部力矩，单位通常为 N·m。该接口是可选项，未启用 nullspace 控制时一般不需要。
+
+### 4. 主 VIC 控制器订阅和发布的 Topic
+
+主控制器订阅参考轨迹：
+
+```text
+Topic:   /<controller_name>/reference_compliant_frame_trajectory
+Type:    cartesian_control_msgs/msg/CompliantFrameTrajectory
+```
+
+消息结构：
+
+```text
+std_msgs/Header header
+cartesian_control_msgs/CartesianTrajectoryPoint[] cartesian_trajectory_points
+cartesian_control_msgs/CartesianCompliance[] compliance_at_points
+```
+
+单个 `CartesianTrajectoryPoint` 包含：
+
+```text
+std_msgs/Header header
+geometry_msgs/Pose pose
+geometry_msgs/Twist velocity
+geometry_msgs/Accel acceleration
+geometry_msgs/Wrench wrench
+builtin_interfaces/Duration time_from_start
+```
+
+单个 `CartesianCompliance` 包含：
+
+```text
+std_msgs/Header header
+std_msgs/Float64MultiArray inertia
+std_msgs/Float64MultiArray damping
+std_msgs/Float64MultiArray stiffness
+```
+
+`inertia`、`damping`、`stiffness` 建议填 6x6 矩阵，按列主序或与项目 `matrixEigenToMsg/fromMsg` 工具一致的顺序传输；如果只使用默认参数，可以让 `compliance_at_points` 为空，由控制器读取 YAML 参数中的 `vic.inertia`、`vic.damping_ratio`、`vic.stiffness`。
+
+发布一个最小参考的命令示例：
+
+```bash
+ros2 topic pub /cartesian_vic_controller/reference_compliant_frame_trajectory \
+  cartesian_control_msgs/msg/CompliantFrameTrajectory \
+  "{header: {frame_id: 'iiwa_base'}, cartesian_trajectory_points: [{pose: {position: {x: 0.45, y: 0.0, z: 0.35}, orientation: {x: 0.0, y: 0.0, z: 0.0, w: 1.0}}, velocity: {linear: {x: 0.0, y: 0.0, z: 0.0}, angular: {x: 0.0, y: 0.0, z: 0.0}}, acceleration: {linear: {x: 0.0, y: 0.0, z: 0.0}, angular: {x: 0.0, y: 0.0, z: 0.0}}, wrench: {force: {x: 0.0, y: 0.0, z: 0.0}, torque: {x: 0.0, y: 0.0, z: 0.0}}, time_from_start: {sec: 0, nanosec: 0}}], compliance_at_points: []}"
+```
+
+主控制器发布状态：
+
+```text
+Topic:   /<controller_name>/status
+Type:    cartesian_control_msgs/msg/VicControllerState
+```
+
+状态消息包含期望 pose/twist/wrench、实际 pose/twist/wrench、渲染后的 `M/D/K`、关节命令和诊断数据，可用于日志、可视化和 teleop follower 反馈。
+
+### 5. 状态广播器 Topic 格式
+
+`cartesian_state_broadcaster` 从 ros2_control 的关节 state interfaces 读取数据，并发布：
+
+```text
+Topic:   /<broadcaster_name>/cartesian_state
+Type:    cartesian_control_msgs/msg/CartesianState
+```
+
+消息结构：
+
+```text
+std_msgs/Header header
+string link_name
+geometry_msgs/Pose pose
+geometry_msgs/Twist twist
+```
+
+它只发布末端笛卡尔状态，不负责发送控制命令。
+
+### 6. Servo 分支 Topic 格式
+
+`cartesian_vic_servo` 从 MoveIt planning scene monitor 获取 joint state，同时订阅 wrench 和 VIC reference：
+
+```text
+Topic:   /<servo_node>/wrench
+Type:    geometry_msgs/msg/WrenchStamped
+
+Topic:   /<servo_node>/reference_compliant_frame_trajectory
+Type:    cartesian_control_msgs/msg/CompliantFrameTrajectory
+```
+
+`WrenchStamped` 需要包含：
+
+```text
+std_msgs/Header header       # frame_id 是 wrench 坐标系
+geometry_msgs/Wrench wrench  # force: N, torque: N·m
+```
+
+Servo 分支发布：
+
+```text
+Topic:   /<servo_node>/status
+Type:    cartesian_control_msgs/msg/VicControllerState
+
+Topic:   <moveit_servo.command_out_topic>
+Type:    trajectory_msgs/msg/JointTrajectory
+```
+
+`moveit_servo.command_out_type` 必须配置为 `trajectory_msgs/JointTrajectory`。
+
+### 7. Teleop 分支 Topic 格式
+
+`cartesian_vic_teleop_controller` 在 leader 端订阅 follower 状态、遥操作柔顺参数和 clutch：
+
+```text
+Topic:   /vic_controller_follower/status
+Type:    cartesian_control_msgs/msg/VicControllerState
+
+Topic:   /<leader_controller>/teleoperation_compliance_reference
+Type:    cartesian_control_msgs/msg/TeleopCompliance
+
+Topic:   fd_clutch
+Type:    std_msgs/msg/Bool
+```
+
+`TeleopCompliance` 包含 leader/follower 两端的 6x6 惯量、刚度和阻尼矩阵：
+
+```text
+std_msgs/Float64MultiArray leader_inertia
+std_msgs/Float64MultiArray leader_stiffness
+std_msgs/Float64MultiArray leader_damping
+std_msgs/Float64MultiArray follower_inertia
+std_msgs/Float64MultiArray follower_stiffness
+std_msgs/Float64MultiArray follower_damping
+```
+
+Teleop 控制器发布 follower 参考和自身状态：
+
+```text
+Topic:   /vic_controller_follower/reference_compliant_frame_trajectory
+Type:    cartesian_control_msgs/msg/CompliantFrameTrajectory
+
+Topic:   /<leader_controller>/teleop_controller_state
+Type:    cartesian_control_msgs/msg/TeleopControllerState
+```
+
 最小接入组合：
 
 - 状态广播器：关节 `position` 和 `velocity` state interfaces，外加 URDF 和 kinematics plugin。

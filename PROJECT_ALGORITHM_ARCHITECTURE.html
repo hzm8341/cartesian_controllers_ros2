@@ -485,7 +485,112 @@ tau_raw   = diag(H(q)) qddot_cmd</div>
     </section>
 
     <section>
-      <h2>7. 关键接口与数据对象</h2>
+      <h2>7. 硬件接口和 Topic 消息格式</h2>
+      <p>主 <code>cartesian_vic_controller</code> 是 ros2_control 控制器，关节和六维力数据通过 hardware interface 进入控制器，不是通过普通 <code>sensor_msgs/JointState</code> topic。Servo 与 Teleop 分支才额外使用 ROS topic。</p>
+
+      <h3>关节硬件接口</h3>
+      <div class="formula">&lt;joint_name&gt;/position
+&lt;joint_name&gt;/velocity
+&lt;joint_name&gt;/effort        # 阻抗 effort 控制需要</div>
+      <p>硬件侧每个周期至少提供所有受控关节的 <code>position</code> 和 <code>velocity</code>。导纳控制写回 <code>velocity</code> 和可选 <code>position</code>；阻抗控制写回 <code>effort</code>。</p>
+      <div class="formula">cartesian_vic_controller:
+  ros__parameters:
+    joints: [joint_a1, joint_a2, joint_a3, joint_a4, joint_a5, joint_a6, joint_a7]
+    state_interfaces: [position, velocity]
+    command_interfaces: [velocity]   # 导纳推荐；阻抗使用 [effort]</div>
+
+      <h3>六维力/力矩传感器接口</h3>
+      <p>主 VIC 控制器使用 ros2_control <code>ForceTorqueSensor</code> semantic component。硬件插件需要导出以下 6 个 state interfaces：</p>
+      <div class="formula">&lt;ft_sensor.name&gt;/force.x
+&lt;ft_sensor.name&gt;/force.y
+&lt;ft_sensor.name&gt;/force.z
+&lt;ft_sensor.name&gt;/torque.x
+&lt;ft_sensor.name&gt;/torque.y
+&lt;ft_sensor.name&gt;/torque.z</div>
+      <div class="formula">ft_sensor:
+  is_enabled: true
+  name: ftsensor
+  frame:
+    id: ft_sensor</div>
+      <p><code>force</code> 单位为 N，<code>torque</code> 单位为 N·m，<code>ft_sensor.frame.id</code> 是 wrench 所在坐标系，并且必须能通过 URDF/TF 与 base 和末端 frame 建立关系。</p>
+
+      <h3>外部关节力矩接口</h3>
+      <p>若启用 <code>external_torque_sensor</code>，默认接口名为：</p>
+      <div class="formula">&lt;external_torque_sensor.name&gt;/external_torque.joint_a0
+&lt;external_torque_sensor.name&gt;/external_torque.joint_a1
+...
+&lt;external_torque_sensor.name&gt;/external_torque.joint_a&lt;N-1&gt;</div>
+      <p>该数据主要用于 nullspace 控制中的外部力矩项，未启用 nullspace 时一般不需要。</p>
+
+      <h3>主 VIC 控制器 Topic</h3>
+      <table>
+        <thead>
+          <tr><th>方向</th><th>Topic</th><th>消息类型</th><th>说明</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>订阅</td><td><code>/&lt;controller_name&gt;/reference_compliant_frame_trajectory</code></td><td><code>cartesian_control_msgs/msg/CompliantFrameTrajectory</code></td><td>参考 pose、twist、accel、wrench，可选每个点的 M/D/K。</td></tr>
+          <tr><td>发布</td><td><code>/&lt;controller_name&gt;/status</code></td><td><code>cartesian_control_msgs/msg/VicControllerState</code></td><td>期望状态、实际状态、wrench、渲染柔顺参数和关节命令。</td></tr>
+        </tbody>
+      </table>
+      <div class="formula">CompliantFrameTrajectory:
+  std_msgs/Header header
+  CartesianTrajectoryPoint[] cartesian_trajectory_points
+  CartesianCompliance[] compliance_at_points
+
+CartesianTrajectoryPoint:
+  geometry_msgs/Pose pose
+  geometry_msgs/Twist velocity
+  geometry_msgs/Accel acceleration
+  geometry_msgs/Wrench wrench
+  builtin_interfaces/Duration time_from_start
+
+CartesianCompliance:
+  Float64MultiArray inertia
+  Float64MultiArray damping
+  Float64MultiArray stiffness</div>
+      <p><code>compliance_at_points</code> 可以为空，此时控制器使用 YAML 参数中的默认 <code>vic.inertia</code>、<code>vic.damping_ratio</code>、<code>vic.stiffness</code>。</p>
+
+      <h3>状态广播器 Topic</h3>
+      <div class="formula">Topic: /&lt;broadcaster_name&gt;/cartesian_state
+Type:  cartesian_control_msgs/msg/CartesianState
+
+CartesianState:
+  std_msgs/Header header
+  string link_name
+  geometry_msgs/Pose pose
+  geometry_msgs/Twist twist</div>
+
+      <h3>Servo 分支 Topic</h3>
+      <table>
+        <thead>
+          <tr><th>方向</th><th>Topic</th><th>消息类型</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>订阅</td><td><code>/&lt;servo_node&gt;/wrench</code></td><td><code>geometry_msgs/msg/WrenchStamped</code></td></tr>
+          <tr><td>订阅</td><td><code>/&lt;servo_node&gt;/reference_compliant_frame_trajectory</code></td><td><code>cartesian_control_msgs/msg/CompliantFrameTrajectory</code></td></tr>
+          <tr><td>发布</td><td><code>/&lt;servo_node&gt;/status</code></td><td><code>cartesian_control_msgs/msg/VicControllerState</code></td></tr>
+          <tr><td>发布</td><td><code>&lt;moveit_servo.command_out_topic&gt;</code></td><td><code>trajectory_msgs/msg/JointTrajectory</code></td></tr>
+        </tbody>
+      </table>
+      <p><code>moveit_servo.command_out_type</code> 必须配置为 <code>trajectory_msgs/JointTrajectory</code>。</p>
+
+      <h3>Teleop 分支 Topic</h3>
+      <table>
+        <thead>
+          <tr><th>方向</th><th>Topic</th><th>消息类型</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>订阅</td><td><code>/vic_controller_follower/status</code></td><td><code>cartesian_control_msgs/msg/VicControllerState</code></td></tr>
+          <tr><td>订阅</td><td><code>/&lt;leader_controller&gt;/teleoperation_compliance_reference</code></td><td><code>cartesian_control_msgs/msg/TeleopCompliance</code></td></tr>
+          <tr><td>订阅</td><td><code>fd_clutch</code></td><td><code>std_msgs/msg/Bool</code></td></tr>
+          <tr><td>发布</td><td><code>/vic_controller_follower/reference_compliant_frame_trajectory</code></td><td><code>cartesian_control_msgs/msg/CompliantFrameTrajectory</code></td></tr>
+          <tr><td>发布</td><td><code>/&lt;leader_controller&gt;/teleop_controller_state</code></td><td><code>cartesian_control_msgs/msg/TeleopControllerState</code></td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>8. 关键接口与数据对象</h2>
       <table>
         <thead>
           <tr><th>对象/接口</th><th>作用</th><th>典型位置</th></tr>
@@ -502,7 +607,7 @@ tau_raw   = diag(H(q)) qddot_cmd</div>
     </section>
 
     <section>
-      <h2>8. 未来可应用场景</h2>
+      <h2>9. 未来可应用场景</h2>
       <p>当前项目的核心价值是把末端笛卡尔空间的轨迹跟踪、柔顺交互、力反馈和 ROS 2 control 硬件接口打通。因此它未来适合用于“需要接触环境、需要安全柔顺、需要远程/双边操作”的机器人系统。</p>
       <table>
         <thead>
@@ -571,7 +676,7 @@ tau_raw   = diag(H(q)) qddot_cmd</div>
     </section>
 
     <section>
-      <h2>9. 运行时注意点</h2>
+      <h2>10. 运行时注意点</h2>
       <ul>
         <li>主 VIC 控制器要求关节 <code>position</code> 和 <code>velocity</code> 状态接口同时存在。</li>
         <li>导纳控制通常需要 F/T 传感器；阻抗控制在非自然惯量模式下也依赖外力估计。</li>
