@@ -41,6 +41,10 @@ source install/setup.bash
 
 ## 项目结构
 
+下面这张图是原始 README 中保留的包关系/类关系总览。它不是完整 UML，但覆盖了项目最主要的模块关系。
+
+![UML class diagram](./cartesian_vic_controller/doc/UML_cartesian_vic_controllers.drawio.png)
+
 ```text
 cartesian_control_msgs
 cartesian_state_broadcaster
@@ -67,6 +71,62 @@ cartesian_vic_teleop_controller
 - `dynamics_interface`
 - `pluginlib`
 - MoveIt 2 与 `moveit_servo`，仅 `cartesian_vic_servo` 分支需要
+
+## Cartesian VIC 控制器结构
+
+`cartesian_vic_controller` 是主控制器包，定义了 ros2_control 控制器外壳和默认 VIC 控制逻辑。核心控制逻辑由 `CartesianVicRule` 提供，实际控制律通过 pluginlib 插件扩展。
+
+```mermaid
+classDiagram
+    note for VicRule "Pluginlib plugin"
+    CartesianVicRule <|-- VicRuleImpl
+    class CartesianVicRule{
+        + init()*
+        + configure()*
+        + update()
+        + reset()*
+        + init_reference_frame_trajectory()
+        + update_compliant_frame_trajectory()
+        + controller_state_to_msg()
+        # compute_controls()*
+    }
+    class VicRuleImpl{
+        + init()*
+        + configure()*
+        + reset()*
+        # compute_controls()*
+    }
+```
+
+`CartesianVicRule` 基类负责机器人状态处理、`VicInputData` 封装、运动学/动力学插件管理、测量滤波、参考轨迹更新和控制器状态打包。它的 `update()` 会先更新输入数据，再调用具体插件实现的 `compute_controls()`。
+
+各 VIC 规则都继承 `CartesianVicRule`，并实现如下核心接口：
+
+```cpp
+bool CartesianVicRule::compute_controls(
+    double dt /*period in seconds*/,
+    const VicInputData & vic_input_data,
+    VicCommandData & vic_command_data);
+```
+
+插件从 `VicInputData` 读取当前关节状态、末端状态、外力、参考轨迹和柔顺参数，并把计算结果写入 `VicCommandData`。例如导纳控制会设置关节位置/速度命令，并设置命令可用标志：
+
+```cpp
+vic_command_data.joint_command_position = /* ... */;
+vic_command_data.joint_command_velocity = /* ... */;
+
+vic_command_data.has_twist_command = false;
+vic_command_data.has_position_command = true;
+vic_command_data.has_velocity_command = true;
+vic_command_data.has_acceleration_command = false;
+vic_command_data.has_effort_command = false;
+```
+
+当前提供的 VIC 规则插件：
+
+- `VanillaCartesianAdmittanceRule`：基础导纳控制，输出关节位置和速度命令，通常是推荐起点。
+- `VanillaCartesianImpedanceRule`：基础阻抗控制，输出关节力矩命令，需要 `effort` command interface。
+- `TwistCmdCartesianAdmittanceRule`：导纳控制的 twist 输出版本，不在 VIC 内部做逆运动学，主要用于 `cartesian_vic_servo`。
 
 ## 总体架构
 
